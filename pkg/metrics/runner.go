@@ -15,6 +15,7 @@ func runForWorkflow(ctx context.Context, workflowFunc func(ctx context.Context, 
 			workflows, found := workflowMap[repo]
 			if !found {
 				log.Println("Repo not found in workflow map", repo)
+				workflowMapLk.RUnlock()
 				continue
 			}
 			for _, v := range workflows {
