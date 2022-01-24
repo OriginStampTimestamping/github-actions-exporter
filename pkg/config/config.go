@@ -1,6 +1,10 @@
 package config
 
-import "github.com/urfave/cli/v2"
+import (
+	"github.com/urfave/cli/v2"
+	"strings"
+	"time"
+)
 
 var (
 	// Github - github configuration
@@ -9,16 +13,24 @@ var (
 		AppInstallationID int64  `split_words:"true"`
 		AppPrivateKey     string `split_words:"true"`
 		Token             string
-		Refresh           int64
+		Refresh           time.Duration
 		Repositories      cli.StringSlice
 		Organizations     cli.StringSlice
-		APIURL            string			
+		APIURL            string
 	}
-	Port  int
-	Debug bool
-	EnterpriseName    string
-	WorkflowFields    string
+	Port           int
+	Debug          bool
+	EnterpriseName string
+	WorkflowFields string
 )
+
+func ParseRepositoryString(repo string) (string, string, bool) {
+	parsed := strings.Split(repo, "/")
+	if len(parsed) != 2 {
+		return "", "", false
+	}
+	return parsed[0], parsed[1], true
+}
 
 // InitConfiguration - set configuration from env vars or command parameters
 func InitConfiguration() []cli.Flag {
@@ -59,11 +71,11 @@ func InitConfiguration() []cli.Flag {
 			Usage:       "Github Personal Token",
 			Destination: &Github.Token,
 		},
-		&cli.Int64Flag{
+		&cli.DurationFlag{
 			Name:        "github_refresh",
 			Aliases:     []string{"gr"},
 			EnvVars:     []string{"GITHUB_REFRESH"},
-			Value:       30,
+			Value:       time.Minute,
 			Usage:       "Refresh time Github Pipelines status in sec",
 			Destination: &Github.Refresh,
 		},
@@ -96,17 +108,10 @@ func InitConfiguration() []cli.Flag {
 			Destination: &Debug,
 		},
 		&cli.StringFlag{
-			Name:        "enterprise_name",
-			EnvVars:     []string{"ENTERPRISE_NAME"},
-			Usage:       "Enterprise name. Needed for enterprise endpoints (/enterprises/{ENTERPRISE_NAME}/*)",
-			Destination: &EnterpriseName,
-			Value:       "",
-		},
-		&cli.StringFlag{
 			Name:        "export_fields",
 			EnvVars:     []string{"EXPORT_FIELDS"},
 			Usage:       "A comma separated list of fields for workflow metrics that should be exported",
-			Value:       "repo,id,node_id,head_branch,head_sha,run_number,workflow_id,workflow,event,status",
+			Value:       "repo,workflow,event,status",
 			Destination: &WorkflowFields,
 		},
 	}

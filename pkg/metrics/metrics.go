@@ -19,11 +19,10 @@ var (
 	client                   *github.Client
 	err                      error
 	workflowRunStatusGauge   *prometheus.GaugeVec
-	workflowRunDurationGauge *prometheus.GaugeVec
 )
 
 // InitMetrics - register metrics in prometheus lib and start func for monitor
-func InitMetrics() {
+func InitMetrics(ctx context.Context) {
 	workflowRunStatusGauge = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "github_workflow_run_status",
@@ -31,42 +30,33 @@ func InitMetrics() {
 		},
 		strings.Split(config.WorkflowFields, ","),
 	)
-	workflowRunDurationGauge = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "github_workflow_run_duration_ms",
-			Help: "Workflow run duration (in milliseconds)",
-		},
-		strings.Split(config.WorkflowFields, ","),
-	)
-	prometheus.MustRegister(runnersGauge)
-	prometheus.MustRegister(runnersOrganizationGauge)
 	prometheus.MustRegister(workflowRunStatusGauge)
-	prometheus.MustRegister(workflowRunDurationGauge)
 	prometheus.MustRegister(workflowBillGauge)
-	prometheus.MustRegister(runnersEnterpriseGauge)
 
-	client, err = NewClient()
+	client, err = NewClient(ctx)
 	if err != nil {
 		log.Fatalln("Error: Client creation failed." + err.Error())
 	}
 
-	go workflowCache()
+	workflowsByRepo := getWorkflows(ctx)
+	workflowMapLk.Lock()
+	workflowMap = workflowsByRepo
+	workflowMapLk.Unlock()
+
+	go workflowCache(ctx)
 
 	for {
-		if workflows != nil {
+		if workflowMap != nil {
 			break
 		}
 	}
 
-	go getBillableFromGithub()
-	go getRunnersFromGithub()
-	go getRunnersOrganizationFromGithub()
-	go getWorkflowRunsFromGithub()
-	go getRunnersEnterpriseFromGithub()
+	go runForWorkflow(ctx, getBillableFromGithub)
+	go runForWorkflow(ctx, getWorkflowRunsFromGithub)
 }
 
 // NewClient creates a Github Client
-func NewClient() (*github.Client, error) {
+func NewClient(ctx context.Context) (*github.Client, error) {
 	var (
 		httpClient *http.Client
 		client     *github.Client
@@ -74,7 +64,7 @@ func NewClient() (*github.Client, error) {
 	)
 	if len(config.Github.Token) > 0 {
 		log.Printf("authenticating with Github Token")
-		transport = oauth2.NewClient(context.Background(), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: config.Github.Token})).Transport
+		transport = oauth2.NewClient(ctx, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: config.Github.Token})).Transport
 		httpClient = &http.Client{Transport: transport}
 	} else {
 		log.Printf("authenticating with Github App")

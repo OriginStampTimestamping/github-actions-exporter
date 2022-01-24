@@ -3,43 +3,60 @@ package metrics
 import (
 	"context"
 	"log"
-	"strings"
+	"sync"
 	"time"
 
-	"github.com/google/go-github/v38/github"
-
 	"github-actions-exporter/pkg/config"
+	"github.com/google/go-github/v38/github"
 )
 
 var (
-	workflows map[string]map[int64]github.Workflow
+	workflowMapLk sync.RWMutex
+	workflowMap   map[string]map[int64]github.Workflow
 )
 
 // workflowCache - used for limit calls to github api
-func workflowCache() {
-	for {
-		ww := make(map[string]map[int64]github.Workflow)
+func workflowCache(ctx context.Context) {
+	for range time.Tick(5 * time.Minute) {
+		workflowsByRepo := getWorkflows(ctx)
+		workflowMapLk.Lock()
+		workflowMap = workflowsByRepo
+		workflowMapLk.Unlock()
+	}
+}
 
-		for _, repo := range config.Github.Repositories.Value() {
-			r := strings.Split(repo, "/")
+func getWorkflows(ctx context.Context) map[string]map[int64]github.Workflow {
+	log.Println("Getting a list of all configured workflows")
 
-			resp, _, err := client.Actions.ListWorkflows(context.Background(), r[0], r[1], nil)
-			if err != nil {
-				log.Printf("ListWorkflows error for %s: %s", repo, err.Error())
-			} else {
+	// map of "owner/repo" -> Workflow ID -> Workflow
+	workflowsByRepo := make(map[string]map[int64]github.Workflow)
 
-				s := make(map[int64]github.Workflow)
-				for _, w := range resp.Workflows {
-					s[*w.ID] = *w
-				}
-
-				ww[repo] = s
-			}
-
+	for _, repo := range config.Github.Repositories.Value() {
+		owner, repoName, ok := config.ParseRepositoryString(repo)
+		if !ok {
+			log.Println("Could not ListWorkflows as repository config does not provide owner and repo separated by a '/':", repo)
+			continue
 		}
 
-		workflows = ww
+		log.Println("Getting a list of workflows for", repo)
+		opts := &github.ListOptions{Page: 0, PerPage: 1000}
+		resp, _, err := client.Actions.ListWorkflows(ctx, owner, repoName, opts)
+		if err != nil {
+			log.Printf("ListWorkflows error for %s: %s\n", repo, err.Error())
+			continue
+		}
 
-		time.Sleep(time.Duration(60) * time.Second)
+		s := make(map[int64]github.Workflow)
+		for _, w := range resp.Workflows {
+			if w == nil {
+				log.Println("Workflow was null in repo", repo)
+				continue
+			}
+			s[*w.ID] = *w
+		}
+
+		workflowsByRepo[repo] = s
 	}
+
+	return workflowsByRepo
 }

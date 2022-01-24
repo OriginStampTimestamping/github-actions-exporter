@@ -2,17 +2,16 @@ package metrics
 
 import (
 	"context"
+	"fmt"
 	"github-actions-exporter/pkg/config"
+	"github.com/google/go-github/v38/github"
 	"log"
 	"strconv"
 	"strings"
-	"time"
-
-	"github.com/google/go-github/v38/github"
 )
 
 // getFieldValue return value from run element which corresponds to field
-func getFieldValue(repo string, run github.WorkflowRun, field string) string {
+func getFieldValue(repo string, workflow github.Workflow, run github.WorkflowRun, field string) string {
 	switch field {
 	case "repo":
 		return repo
@@ -29,7 +28,7 @@ func getFieldValue(repo string, run github.WorkflowRun, field string) string {
 	case "workflow_id":
 		return strconv.FormatInt(*run.WorkflowID, 10)
 	case "workflow":
-		return *workflows[repo][*run.WorkflowID].Name
+		return *workflow.Name
 	case "event":
 		return *run.Event
 	case "status":
@@ -39,53 +38,66 @@ func getFieldValue(repo string, run github.WorkflowRun, field string) string {
 }
 
 //
-func getRelevantFields(repo string, run *github.WorkflowRun) []string {
+func getRelevantFields(repo string, workflow github.Workflow, run *github.WorkflowRun) []string {
 	relevantFields := strings.Split(config.WorkflowFields, ",")
 	result := make([]string, len(relevantFields))
 	for i, field := range relevantFields {
-		result[i] = getFieldValue(repo, *run, field)
+		result[i] = getFieldValue(repo, workflow, *run, field)
 	}
 	return result
 }
 
-// getWorkflowRunsFromGithub - return informations and status about a workflow
-func getWorkflowRunsFromGithub() {
-	for {
-		for _, repo := range config.Github.Repositories.Value() {
-			r := strings.Split(repo, "/")
-			resp, _, err := client.Actions.ListRepositoryWorkflowRuns(context.Background(), r[0], r[1], nil)
-			if err != nil {
-				log.Printf("ListRepositoryWorkflowRuns error for %s: %s", repo, err.Error())
-			} else {
-				for _, run := range resp.WorkflowRuns {
-					var s float64 = 0
-					if run.GetConclusion() == "success" {
-						s = 1
-					} else if run.GetConclusion() == "skipped" {
-						s = 2
-					} else if run.GetConclusion() == "in_progress" {
-						s = 3
-					} else if run.GetConclusion() == "queued" {
-						s = 4
-					}
-
-					fields := getRelevantFields(repo, run)
-
-					workflowRunStatusGauge.WithLabelValues(fields...).Set(s)
-
-					resp, _, err := client.Actions.GetWorkflowRunUsageByID(context.Background(), r[0], r[1], *run.ID)
-					if err != nil { // Fallback for Github Enterprise
-						created := run.CreatedAt.Time.Unix()
-						updated := run.UpdatedAt.Time.Unix()
-						elapsed := updated - created
-						workflowRunDurationGauge.WithLabelValues(fields...).Set(float64(elapsed * 1000))
-					} else {
-						workflowRunDurationGauge.WithLabelValues(fields...).Set(float64(resp.GetRunDurationMS()))
-					}
-				}
-			}
-		}
-
-		time.Sleep(time.Duration(config.Github.Refresh) * time.Second)
+func getWorkflowRunsFromGithub(ctx context.Context, owner string, repoName string, workflow github.Workflow) error {
+	opts := &github.ListWorkflowRunsOptions{ListOptions: github.ListOptions{PerPage: 1}}
+	log.Printf("Getting runs for %s in %s/%s...", *workflow.Name, owner, repoName)
+	resp, _, err := client.Actions.ListWorkflowRunsByID(ctx, owner, repoName, *workflow.ID, opts)
+	if err != nil {
+		return fmt.Errorf("ListWorkflowRunsByID error for %s and %d: %s", repoName, *workflow.ID, err.Error())
 	}
+
+	if len(resp.WorkflowRuns) != 1 {
+		log.Printf("  Workflow runs for %s: %d", *workflow.Name, len(resp.WorkflowRuns))
+		return nil
+	}
+
+	run := resp.WorkflowRuns[0]
+
+	status := 0
+	switch run.GetStatus() {
+	case "queued":
+		status = 1
+	case "in_progress":
+		status = 2
+	case "completed":
+		status = 3
+	}
+
+	conclusion := 0
+	switch run.GetConclusion() {
+	case "neutral":
+		conclusion = 1
+	case "success":
+		conclusion = 2
+	case "skipped":
+		conclusion = 3
+	case "cancelled":
+		conclusion = 4
+	case "timed_out":
+		conclusion = 5
+	case "action_required":
+		conclusion = 6
+	case "failure":
+		conclusion = 7
+	}
+	// 37 -> completed failure
+	// 32 -> completed success
+	value, err := strconv.Atoi(fmt.Sprintf("%d%d", status, conclusion))
+	if err != nil {
+		return err
+	}
+
+	fields := getRelevantFields(repoName, workflow, run)
+	workflowRunStatusGauge.WithLabelValues(fields...).Set(float64(value))
+
+	return nil
 }

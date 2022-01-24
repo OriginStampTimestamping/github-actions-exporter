@@ -14,7 +14,7 @@ import (
 
 // RunServer - run http server for expose metrics
 func RunServer(ctx *cli.Context) error {
-	metrics.InitMetrics()
+	metrics.InitMetrics(ctx.Context)
 
 	r := router.New()
 	r.GET("/", func(ctx *fasthttp.RequestCtx) {
